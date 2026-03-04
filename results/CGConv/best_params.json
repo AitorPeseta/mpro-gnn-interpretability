@@ -1,0 +1,8 @@
+{
+  "hidden_channels": 64,
+  "num_layers": 4,
+  "dropout": 0.2084309414260955,
+  "lr": 0.0030295168383389606,
+  "batch_size": 8,
+  "weight_decay": 0.0005391958019770255
+}
