@@ -34,7 +34,7 @@ DATASET_MODE = 'complex'
 DATASET_PATH = './data'
 RESULTS_ROOT = f"results"
 N_TRIALS = 50
-EDGE_DIM = 2
+EDGE_DIM = 13
 
 # =====================================================================
 # ARQUITECTURAS DE LAS REDES NEURONALES (EL CEREBRO)
@@ -56,7 +56,6 @@ class CGConv_Model(torch.nn.Module):
         self.bns = torch.nn.ModuleList()
         
         for _ in range(num_layers):
-            # dim=EDGE_DIM es VITAL: Le dice a la IA que mire las distancias y tipos de enlaces
             self.convs.append(CGConv(channels=hidden_channels, dim=EDGE_DIM, batch_norm=True))
             self.bns.append(BatchNorm1d(hidden_channels))
             
@@ -237,7 +236,7 @@ def plot_scatter(targets, preds, model_name, fold, save_dir, metrics):
 def objective(trial, model_name):
     # Valores ajustados para CPU (Batch sizes pequeños, hidden_channels racionales)
     hidden_channels = trial.suggest_int("hidden_channels", 32, 128, step=32)
-    num_layers = trial.suggest_int("num_layers", 2, 4)
+    num_layers = trial.suggest_int("num_layers", 4, 7)
     dropout = trial.suggest_float("dropout", 0.2, 0.5)
     lr = trial.suggest_float("lr", 5e-4, 5e-3, log=True)
     batch_size = trial.suggest_categorical("batch_size", [4, 8, 16])

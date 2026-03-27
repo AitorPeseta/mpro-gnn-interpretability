@@ -1,0 +1,31 @@
+# Entornos virtuales
+venv/
+env/
+.venv/
+.conda/
+.micromamba/
+
+# Archivos temporales de Python y cachés
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Archivos temporales del puente REINVENT
+temp_*.csv
+
+# Pesos de modelos de Machine Learning (¡No subir a GitHub!)
+*.pkl
+*.h5
+*.pt
+*.pth
+*.chkpt
+
+# Datos pesados (solo subiremos scripts, los datos se quedan en tu PC)
+data/raw/*
+data/processed/*
+data/generated/*
+*.sdf
+*.csv
+
+# Logs de REINVENT
+*.log
