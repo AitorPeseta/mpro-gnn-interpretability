@@ -173,7 +173,6 @@ def add_peptide_bonds(protein_nodes_map, protein_residues, edge_indices, edge_at
             if key_C in protein_nodes_map and key_N in protein_nodes_map:
                 idx_C, idx_N = protein_nodes_map[key_C], protein_nodes_map[key_N]
                 
-                # [MODIFICADO] Normalización y One-Hot para enlaces peptídicos
                 dist_norm = min(dist / MAX_DIST_THEORETICAL, 1.0)
                 inter_one_hot = one_hot_interaction(0) # 0 = covalente
                 
@@ -183,10 +182,6 @@ def add_peptide_bonds(protein_nodes_map, protein_residues, edge_indices, edge_at
                 
     # (Lógica simplificada para puentes disulfuro también omitida para mantener brevedad)
     return num_peptide_bonds, num_disulfide_bonds
-
-# =====================================================================
-# EL INGENIERO JEFE: CONSTRUCTOR DEL SÚPER-GRAFO
-# =====================================================================
 
 def complex_to_graph_hybrid(sdf_path, cif_path, pdb_path, json_path, target_val, pdb_id, viz_dir=None):
     if not os.path.exists(sdf_path): return None
@@ -227,7 +222,6 @@ def complex_to_graph_hybrid(sdf_path, cif_path, pdb_path, json_path, target_val,
         i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
         b_type = bond.GetBondTypeAsDouble() 
         
-        # [MODIFICADO] Normalización y One-Hot para el fármaco
         dist_norm = min(b_type / MAX_DIST_THEORETICAL, 1.0)
         inter_one_hot = one_hot_interaction(0) # 0 = covalente interno
         
@@ -246,71 +240,66 @@ def complex_to_graph_hybrid(sdf_path, cif_path, pdb_path, json_path, target_val,
         exact_matches, distance_matches, failed_matches = 0, 0, 0
         
         for inter in interactions:
-            if inter.get('interacting_entities') != 'INTER': continue 
-            
+            if inter.get('interacting_entities') != 'INTER': continue
+
             bgn, end = inter.get('bgn', {}), inter.get('end', {})
-            
             if bgn.get('label_comp_id') in STANDARD_AA: atom_prot_data, atom_lig_data = bgn, end
             elif end.get('label_comp_id') in STANDARD_AA: atom_prot_data, atom_lig_data = end, bgn
             else: continue
-            
-            res_name = atom_prot_data.get('label_comp_id')   
-            res_seq = int(atom_prot_data.get('auth_seq_id')) 
-            prot_atom_name = atom_prot_data.get('auth_atom_id') 
+
+            res_name = atom_prot_data.get('label_comp_id')
+            res_seq = int(atom_prot_data.get('auth_seq_id'))
+            prot_atom_name = atom_prot_data.get('auth_atom_id')
             res_key = (res_name, res_seq)
-            
+
             if res_key not in protein_residues: continue
-            
+
+            lig_atom_name = atom_lig_data.get('auth_atom_id')
+            lig_idx = None
+
+            if sdf_to_cif_name:
+                for sdf_idx, cif_name in sdf_to_cif_name.items():
+                    if cif_name == lig_atom_name:
+                        lig_idx = sdf_idx
+                        exact_matches += 1
+                        break
+
+            if lig_idx is None:
+                if prot_atom_name not in protein_residues[res_key]:
+                    failed_matches += 1
+                    continue                       
+                prot_coord = protein_residues[res_key][prot_atom_name]
+                dist_reportada = inter.get('distance', 0.0)
+                distances = np.linalg.norm(ligand_coords - prot_coord, axis=1)
+                diffs = np.abs(distances - dist_reportada)
+                lig_idx = np.argmin(diffs)
+
+                if diffs[lig_idx] > DISTANCE_TOLERANCE:
+                    failed_matches += 1
+                    continue                       
+                distance_matches += 1
+
             if res_key not in added_residues:
                 residue_atoms = protein_residues[res_key]
-                res_atom_names = list(residue_atoms.keys())
-                
-                for a_name in res_atom_names:
+                for a_name in residue_atoms.keys():
                     node_features.append(get_atom_features_from_symbol(a_name[0].upper(), is_ligand=False))
                     node_positions.append(residue_atoms[a_name])
                     protein_nodes_map[(res_name, res_seq, a_name)] = current_node_idx
                     current_node_idx += 1
                 added_residues.add(res_key)
-                
+
+                res_atom_names = list(residue_atoms.keys())
                 for i_a in range(len(res_atom_names)):
                     for j_a in range(i_a + 1, len(res_atom_names)):
                         name_i, name_j = res_atom_names[i_a], res_atom_names[j_a]
                         dist = np.linalg.norm(residue_atoms[name_i] - residue_atoms[name_j])
                         if dist < INTRA_RESIDUE_BOND_THRESHOLD:
-                            idx_i, idx_j = protein_nodes_map[(res_name, res_seq, name_i)], protein_nodes_map[(res_name, res_seq, name_j)]
-                            
-                            # [MODIFICADO] Normalización y One-Hot para el esqueleto de la proteína
+                            idx_i = protein_nodes_map[(res_name, res_seq, name_i)]
+                            idx_j = protein_nodes_map[(res_name, res_seq, name_j)]
                             dist_norm = min(dist / MAX_DIST_THEORETICAL, 1.0)
                             inter_one_hot = one_hot_interaction(0)
-                            
-                            edge_indices += [[idx_i, idx_j], [idx_j, idx_i]] 
+                            edge_indices += [[idx_i, idx_j], [idx_j, idx_i]]
                             edge_attrs += [[dist_norm] + inter_one_hot, [dist_norm] + inter_one_hot]
-            
-            lig_atom_name = atom_lig_data.get('auth_atom_id') 
-            lig_idx = None
-            
-            if sdf_to_cif_name: 
-                for sdf_idx, cif_name in sdf_to_cif_name.items():
-                    if cif_name == lig_atom_name:
-                        lig_idx = sdf_idx 
-                        exact_matches += 1
-                        break
-            
-            if lig_idx is None: 
-                if prot_atom_name not in protein_residues[res_key]:
-                    failed_matches += 1
-                    continue
-                prot_coord = protein_residues[res_key][prot_atom_name] 
-                dist_reportada = inter.get('distance', 0.0)            
-                
-                distances = np.linalg.norm(ligand_coords - prot_coord, axis=1)
-                diffs = np.abs(distances - dist_reportada)
-                lig_idx = np.argmin(diffs) 
-                
-                if diffs[lig_idx] > DISTANCE_TOLERANCE:
-                    failed_matches += 1
-                    continue
-                distance_matches += 1
             
             prot_atom_key = (res_name, res_seq, prot_atom_name)
             if prot_atom_key not in protein_nodes_map: continue
@@ -326,7 +315,6 @@ def complex_to_graph_hybrid(sdf_path, cif_path, pdb_path, json_path, target_val,
             inter_num = INTERACTION_MAP.get(inter_type_str.lower(), 11)
             dist_reportada = inter.get('distance', 3.5)
             
-            # [MODIFICADO] Normalización y One-Hot para enlaces Fármaco-Proteína
             dist_norm = min(dist_reportada / MAX_DIST_THEORETICAL, 1.0)
             inter_one_hot = one_hot_interaction(inter_num)
             
@@ -336,25 +324,21 @@ def complex_to_graph_hybrid(sdf_path, cif_path, pdb_path, json_path, target_val,
         num_pep, num_ss = add_peptide_bonds(protein_nodes_map, protein_residues, edge_indices, edge_attrs)
         my_logger.info(f"[{pdb_id}] ✓ Exactas: {exact_matches} | Distancia: {distance_matches} | Pep: {num_pep} | Fallos: {failed_matches}")
     
-    # 7. EMPAQUETADO MATEMÁTICO (PYTORCH)
     x = torch.tensor(np.array(node_features), dtype=torch.float)
     y_val = torch.tensor([[target_val]], dtype=torch.float) 
     
-    # [MODIFICADO] Aplicando la normalización Min-Max espacial de tu jefa
     pos_raw = torch.tensor(np.array(node_positions), dtype=torch.float)
-    pos_norm = (pos_raw - POS_MIN) / (POS_MAX - POS_MIN) # Fórmula matemática: (X - Min) / (Max - Min)
+    pos_norm = (pos_raw - POS_MIN) / (POS_MAX - POS_MIN).clamp(min=0.0, max=1.0) # Fórmula matemática: (X - Min) / (Max - Min)
     
     if len(edge_indices) > 0:
         edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
         edge_attr = torch.tensor(edge_attrs, dtype=torch.float)
     else:
         edge_index = torch.empty((2, 0), dtype=torch.long)
-        edge_attr = torch.empty((0, 13), dtype=torch.float) # [MODIFICADO] Ahora tiene dimensión 13
+        edge_attr = torch.empty((0, 13), dtype=torch.float)
     
-    # [MODIFICADO] Usamos 'pos_norm' en lugar de 'pos' (coordenadas brutas)
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y_val, pos=pos_norm, pdb_id=pdb_id)
     
-    # 8. FILTRADO DE NODOS HUÉRFANOS (ISLAS)
     G = to_networkx(data, to_undirected=True)
     connected_components = list(nx.connected_components(G))
     ligand_nodes = set(torch.where(data.x[:, -1] == 1)[0].numpy()) 
@@ -372,7 +356,6 @@ def complex_to_graph_hybrid(sdf_path, cif_path, pdb_path, json_path, target_val,
         data.edge_index = edge_index_sub
         data.edge_attr = edge_attr_sub
         
-    # 9. VISUALIZACIÓN 2D
     if viz_dir is not None:
         try:
             plt.figure(figsize=(8, 8))

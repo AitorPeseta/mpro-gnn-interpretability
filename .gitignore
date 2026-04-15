@@ -20,12 +20,13 @@ temp_*.csv
 *.pth
 *.chkpt
 
-# Datos pesados (solo subiremos scripts, los datos se quedan en tu PC)
+# Datos pesados
 data/raw/*
 data/processed/*
 data/generated/*
 *.sdf
 *.csv
+results*
 
-# Logs de REINVENT
+# Logs
 *.log

@@ -1,0 +1,23 @@
+# Core Machine Learning & Grafos
+torch>=2.0.0
+torch_geometric>=2.3.0
+captum>=0.6.0  # Obligatorio para el CaptumExplainer (CAM/Saliency)
+
+# Química Computacional
+rdkit>=2023.03.1
+
+# Optimización de Hiperparámetros
+optuna>=3.0.0
+
+# Manipulación de Datos y Matemáticas
+numpy<2.0.0  # Restringido para evitar conflictos con versiones antiguas de PyTorch/Pandas
+pandas>=2.0.0
+scikit-learn>=1.2.0
+
+# Visualización y Grafos Clásicos
+matplotlib>=3.7.0
+networkx>=3.0
+
+# Utilidades
+tqdm>=4.65.0
+ipykernel>=6.0.0  # Para poder ejecutar tu data_analysis.ipynb
