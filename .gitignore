@@ -27,6 +27,7 @@ data/generated/*
 *.sdf
 *.csv
 results*
+diagnostics*
 
 # Logs
 *.log

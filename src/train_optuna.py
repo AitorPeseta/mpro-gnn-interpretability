@@ -335,8 +335,6 @@ def run_cross_validation(model_name, best_params, save_dir):
 if __name__ == "__main__":
     os.makedirs(RESULTS_ROOT, exist_ok=True)
     
-    # ---------------- CAMBIO CLAVE AQUÍ ----------------
-    # Hemos sustituido NNConv por CGConv
     MODELS = ["CGConv", "GAT", "GINE", "GT"]
     all_results = {}
     print(f"\n{'='*60}\nENTRENAMIENTO CON MODELOS EDGE-AWARE\n{'='*60}\n")
@@ -368,15 +366,11 @@ if __name__ == "__main__":
         with open(os.path.join(model_dir, 'cv_results.json'), 'w') as f:
             json.dump(cv_results, f, indent=2)
             
-        # =========================================================
-        # LIMPIEZA MASIVA DE MEMORIA ANTES DEL SIGUIENTE MODELO
-        # =========================================================
         print("Limpiando RAM y caché para el siguiente modelo...")
         del study  
         gc.collect() 
         if torch.cuda.is_available():
             torch.cuda.empty_cache() 
-        # =========================================================
             
     print(f"\n{'='*60}\nRESUMEN FINAL [MODELOS EDGE-AWARE]\n{'='*60}")
     for model, results in all_results.items():

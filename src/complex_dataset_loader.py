@@ -48,7 +48,12 @@ PEPTIDE_BOND_THRESHOLD = 1.6
 DISULFIDE_BOND_THRESHOLD = 2.3     
 
 # [NUEVO] Límite máximo para normalizar distancias de enlaces (entre 0 y 1)
-MAX_DIST_THEORETICAL = 6.0 
+MAX_DIST_THEORETICAL = 6.0
+
+# Distancia máxima (Ångströms) de un átomo proteico al centroide del ligando.
+# Residuos más lejos que este valor se eliminan aunque tengan interacción en el JSON.
+# 12 Å cubre el bolsillo activo completo de Mpro (zona de unión típica 4-10 Å).
+PROTEIN_DISTANCE_CUTOFF = 12.0
 
 # [NUEVO] Rango global de coordenadas X, Y, Z de todo el dataset para escalado Min-Max
 POS_MIN = torch.tensor([-28.0, -36.0, -34.0], dtype=torch.float)
@@ -338,23 +343,56 @@ def complex_to_graph_hybrid(sdf_path, cif_path, pdb_path, json_path, target_val,
         edge_attr = torch.empty((0, 13), dtype=torch.float)
     
     data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, y=y_val, pos=pos_norm, pdb_id=pdb_id)
-    
+
+    # ── 8a. FILTRO DE DISTANCIA AL LIGANDO ────────────────────────────────
+    # Usamos pos_raw (coordenadas en Å reales) para calcular distancias físicas.
+    # Se elimina cualquier átomo proteico cuyo centroide diste más de
+    # PROTEIN_DISTANCE_CUTOFF Å del centroide del ligando.
+    # Esto elimina residuos que el JSON reporta como "interactuantes" pero que
+    # en coordenadas 3D están lejos del bolsillo activo (artefactos del JSON).
+    is_ligand_mask = data.x[:, -1] == 1
+    if is_ligand_mask.sum() > 0:
+        ligand_centroid = pos_raw[is_ligand_mask].mean(dim=0)  # centroide en Å
+        dist_to_ligand  = torch.norm(pos_raw - ligand_centroid, dim=1)  # Å por nodo
+
+        # Conservar: todos los nodos del ligando + nodos proteicos dentro del cutoff
+        dist_mask = is_ligand_mask | (dist_to_ligand <= PROTEIN_DISTANCE_CUTOFF)
+
+        n_removed = (~dist_mask).sum().item()
+        if n_removed > 0:
+            my_logger.info(
+                f"[{pdb_id}] Filtro distancia: {n_removed} nodos eliminados "
+                f"(>{PROTEIN_DISTANCE_CUTOFF} Å del centroide del ligando)"
+            )
+            edge_index_sub, edge_attr_sub = subgraph(
+                dist_mask, data.edge_index, data.edge_attr, relabel_nodes=True
+            )
+            data.x         = data.x[dist_mask]
+            data.pos       = data.pos[dist_mask]
+            data.edge_index = edge_index_sub
+            data.edge_attr  = edge_attr_sub
+            # Actualizar pos_raw para que el filtro de huérfanos use los índices correctos
+            pos_raw = pos_raw[dist_mask]
+
+    # ── 8b. FILTRO DE NODOS HUÉRFANOS (ISLAS) ────────────────────────────
+    # Elimina componentes conectadas que no tengan ningún nodo del ligando.
     G = to_networkx(data, to_undirected=True)
     connected_components = list(nx.connected_components(G))
-    ligand_nodes = set(torch.where(data.x[:, -1] == 1)[0].numpy()) 
-    valid_nodes = set()
+    ligand_nodes = set(torch.where(data.x[:, -1] == 1)[0].numpy())
+    valid_nodes  = set()
     
     for comp in connected_components:
-        if comp.intersection(ligand_nodes): valid_nodes.update(comp) 
+        if comp.intersection(ligand_nodes):
+            valid_nodes.update(comp)
     
     if len(valid_nodes) < data.num_nodes:
         mask = torch.zeros(data.num_nodes, dtype=torch.bool)
         mask[list(valid_nodes)] = True
         edge_index_sub, edge_attr_sub = subgraph(mask, data.edge_index, data.edge_attr, relabel_nodes=True)
-        data.x = data.x[mask]
-        data.pos = data.pos[mask]
+        data.x          = data.x[mask]
+        data.pos        = data.pos[mask]
         data.edge_index = edge_index_sub
-        data.edge_attr = edge_attr_sub
+        data.edge_attr  = edge_attr_sub
         
     if viz_dir is not None:
         try:

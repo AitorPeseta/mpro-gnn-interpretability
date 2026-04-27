@@ -40,12 +40,12 @@ def generate_heatmaps():
         r2_mean = data[model]['r2_mean']
         
         # Creamos la fila para RMSE
-        rmse_row = {f'Fold {i+1}': rmse_folds[i] for i in range(5)}
+        rmse_row = {f'Fold {i}': rmse_folds[i] for i in range(5)}
         rmse_row['Media Global'] = rmse_mean
         rmse_rows.append(rmse_row)
         
         # Creamos la fila para R2
-        r2_row = {f'Fold {i+1}': r2_folds[i] for i in range(5)}
+        r2_row = {f'Fold {i}': r2_folds[i] for i in range(5)}
         r2_row['Media Global'] = r2_mean
         r2_rows.append(r2_row)
 
