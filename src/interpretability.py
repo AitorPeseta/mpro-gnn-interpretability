@@ -178,6 +178,192 @@ def node_imp_to_edge_mask(node_importance_np, edge_index):
 
 
 # =====================================================================
+# THRESHOLD ADAPTATIVO (PERCENTIL)
+# =====================================================================
+def adaptive_threshold(edge_mask, top_k_pct=0.30):
+    """
+    Calcula un threshold adaptativo basado en percentil de la distribución
+    de la edge_mask, de modo que aproximadamente el top_k_pct de las aristas
+    queden marcadas como "importantes".
+
+    Esto evita el problema del threshold fijo a 0.5: si la distribución de
+    la máscara es asimétrica (típico en GNNExplainer y en proxies de Saliency
+    normalizadas), un valor fijo puede seleccionar todas o casi ninguna arista,
+    inflando artificialmente Fidelity+ y Fidelity-.
+
+    Parámetros
+    ----------
+    edge_mask : torch.Tensor
+        Máscara de importancia (1D o aplanable).
+    top_k_pct : float, default=0.30
+        Fracción de aristas a conservar como importantes (0,1].
+
+    Devuelve
+    --------
+    float
+        Threshold tal que aprox. top_k_pct de las aristas lo superan.
+    """
+    em = edge_mask.view(-1).detach().cpu().float()
+    if em.numel() == 0:
+        return 0.5
+    top_k_pct = max(min(top_k_pct, 1.0), 1e-3)
+    q = 1.0 - top_k_pct
+    threshold = torch.quantile(em, q).item()
+    # Si la máscara es constante (varianza nula) devolvemos un valor neutro
+    if not np.isfinite(threshold):
+        return 0.5
+    return float(threshold)
+
+
+# =====================================================================
+# ESTRATIFICACIÓN POR RANGO DE pIC50
+# =====================================================================
+def get_pic50_stratum(pic50_value):
+    """
+    Asigna un rango cualitativo de potencia según el valor experimental
+    de pIC50. Permite analizar si los métodos XAI funcionan de forma
+    homogénea o si la varianza alta proviene de una región concreta del
+    espacio químico.
+
+    Convención farmacológica habitual:
+      - pIC50 < 5     → baja potencia (IC50 > 10 µM)
+      - 5 ≤ pIC50 < 7 → potencia media (10 µM ≥ IC50 > 100 nM)
+      - pIC50 ≥ 7     → alta potencia (IC50 ≤ 100 nM)
+    """
+    if pic50_value < 5.0:
+        return "low (<5)"
+    if pic50_value < 7.0:
+        return "medium (5-7)"
+    return "high (>=7)"
+
+
+# =====================================================================
+# CURVAS DE FIDELIDAD AGREGADAS POR ESTRATO DE pIC50
+# =====================================================================
+def plot_aggregated_fidelity_curves(all_results, methods, strata, save_dir):
+    """
+    Agrega las curvas individuales de fidelitat (Fid+ y Fid-) almacenadas
+    en `all_results[mol][method]['fidelity_curve']` y dibuja, para cada
+    método, una figura con dos paneles (Fid+ y Fid-) donde cada estrato
+    de pIC50 aparece como una curva con su banda de incertidumbre
+    (media ± 1 desviación estándar).
+
+    Esto permite visualizar:
+      - Si la fidelidad escala con la potencia del inhibidor.
+      - Cuál es el porcentaje óptimo de aristas a conservar (top-k%) para
+        capturar la predicción, justificando empíricamente la elección
+        del threshold (top-30%) usado en las métricas escalares.
+    """
+    import matplotlib.pyplot as plt
+
+    colors_by_stratum = {
+        "low (<5)":     "#1b9e77",
+        "medium (5-7)": "#d95f02",
+        "high (>=7)":   "#7570b3",
+    }
+
+    plots_generated = []
+
+    for method in methods:
+        # Recolectar curvas por estrato
+        curves_by_stratum = {s: {'plus': [], 'minus': [], 'x': None}
+                             for s in strata}
+
+        for mol_data in all_results.values():
+            if not isinstance(mol_data, dict):
+                continue
+            stratum = mol_data.get("pic50_stratum")
+            if stratum not in curves_by_stratum:
+                continue
+            method_block = mol_data.get(method, {})
+            curve = method_block.get("fidelity_curve") if isinstance(method_block, dict) else None
+            if not curve:
+                continue
+            curves_by_stratum[stratum]['plus'].append(curve['fidelity_plus'])
+            curves_by_stratum[stratum]['minus'].append(curve['fidelity_minus'])
+            if curves_by_stratum[stratum]['x'] is None:
+                curves_by_stratum[stratum]['x'] = curve['x_pct']
+
+        # ── Generar figura con dos paneles ─────────────────────────────
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        fig.suptitle(
+            f'Curvas de Fidelidad Agregadas por Estrato de pIC50 — {method}\n'
+            f'(media ± 1 sd entre moléculas; threshold top-30% marcado)',
+            fontsize=12, fontweight='bold'
+        )
+
+        any_data = False
+        for s in strata:
+            data_s = curves_by_stratum[s]
+            if not data_s['plus'] or data_s['x'] is None:
+                continue
+            any_data = True
+
+            x_arr      = np.array(data_s['x'])
+            plus_arr   = np.array(data_s['plus'])    # (n_mol, n_steps+1)
+            minus_arr  = np.array(data_s['minus'])
+            n_mol      = plus_arr.shape[0]
+            color      = colors_by_stratum.get(s, "#666666")
+
+            # ── Panel izquierdo: Fidelity+ ─────────────────────────────
+            mean_p = plus_arr.mean(axis=0)
+            std_p  = plus_arr.std(axis=0)
+            axes[0].plot(x_arr, mean_p, marker='o', markersize=4,
+                         color=color, linewidth=2,
+                         label=f'{s}  (n={n_mol})')
+            axes[0].fill_between(x_arr, mean_p - std_p, mean_p + std_p,
+                                 alpha=0.15, color=color)
+
+            # ── Panel derecho: Fidelity- ───────────────────────────────
+            mean_m = minus_arr.mean(axis=0)
+            std_m  = minus_arr.std(axis=0)
+            axes[1].plot(x_arr, mean_m, marker='s', markersize=4,
+                         color=color, linewidth=2,
+                         label=f'{s}  (n={n_mol})')
+            axes[1].fill_between(x_arr, mean_m - std_m, mean_m + std_m,
+                                 alpha=0.15, color=color)
+
+        if not any_data:
+            plt.close(fig)
+            print(f"  [{method}] sin datos de curvas para agregar.")
+            continue
+
+        # Línea vertical en top-30% para señalar el threshold usado
+        for ax in axes:
+            ax.axvline(30, color='black', linestyle=':', linewidth=1.2,
+                       alpha=0.6, label='threshold escalar (30%)')
+            ax.axhline(0, color='gray', linewidth=0.8, linestyle='--')
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8, loc='best')
+            ax.set_ylim(bottom=0)
+
+        axes[0].set_title(
+            'Fidelity+\nΔ pIC50 al eliminar las top-k% aristas más importantes',
+            fontsize=10, fontweight='bold'
+        )
+        axes[0].set_xlabel('% aristas eliminadas (las más importantes primero)',
+                           fontsize=10)
+        axes[0].set_ylabel('|Δ pIC50|', fontsize=10)
+
+        axes[1].set_title(
+            'Fidelity−\nΔ pIC50 al conservar SOLO las top-k% aristas más importantes',
+            fontsize=10, fontweight='bold'
+        )
+        axes[1].set_xlabel('% aristas conservadas (las más importantes primero)',
+                           fontsize=10)
+        axes[1].set_ylabel('|Δ pIC50|', fontsize=10)
+
+        plt.tight_layout()
+        save_path = os.path.join(save_dir, f'fidelity_curve_AGGREGATED_{method}.png')
+        plt.savefig(save_path, dpi=180, bbox_inches='tight')
+        plt.close(fig)
+        plots_generated.append(save_path)
+        print(f"  [Curva agregada] {method} → {save_path}")
+
+    return plots_generated
+
+
+# =====================================================================
 # MAIN
 # =====================================================================
 if __name__ == "__main__":
@@ -231,7 +417,7 @@ if __name__ == "__main__":
     print(f"  ✓ Modelo listo (con wrapper para Explainer)")
 
     # ─────────────────────────────────────────────────────────────────
-    # Top-10 predicciones con menor error absoluto
+    # Top-30 predicciones con menor error absoluto
     # ─────────────────────────────────────────────────────────────────
     print("\n" + "="*60)
     print("Buscando mejores predicciones...")
@@ -243,17 +429,40 @@ if __name__ == "__main__":
         batch = torch.zeros(data.x.size(0), dtype=torch.long).to(DEVICE)
         pred = model_original(data.x, data.edge_index, data.edge_attr, batch).item()
         real = data.y.item()
-        resultados.append({'indice': idx, 'error': abs(pred - real), 'pred': pred, 'real': real})
-        
-    top_10 = sorted(resultados, key=lambda x: x['error'])[:10]
-    
-    print(f"\nTop 10 predicciones:")
-    print(f"{'#':>3} {'Idx':>5} {'Pred':>8} {'Real':>8} {'Error':>8}")
-    print("-" * 40)
-    for rank, res in enumerate(top_10, 1):
-        print(f"{rank:>3} {res['indice']:>5} {res['pred']:>8.3f} {res['real']:>8.3f} {res['error']:>8.3f}")
-        
-    indices_a_evaluar = [res['indice'] for res in top_10]
+        resultados.append({
+            'indice':  idx,
+            'error':   abs(pred - real),
+            'pred':    pred,
+            'real':    real,
+            'stratum': get_pic50_stratum(real),
+        })
+
+    # ── Muestreo estratificado: K mejores predicciones por estrato ────────
+    K_PER_STRATUM = 10
+    strata_order  = ["low (<5)", "medium (5-7)", "high (>=7)"]
+
+    print(f"\nDistribución de moléculas por estrato en el dataset:")
+    for s in strata_order:
+        n_total = sum(1 for r in resultados if r['stratum'] == s)
+        print(f"  • {s:<14}  n={n_total}")
+
+    print(f"\nSeleccionando hasta {K_PER_STRATUM} mejores predicciones por estrato...")
+    top_estratificado = []
+    for s in strata_order:
+        candidatos = [r for r in resultados if r['stratum'] == s]
+        seleccionados = sorted(candidatos, key=lambda x: x['error'])[:K_PER_STRATUM]
+        print(f"  • {s:<14}  seleccionados={len(seleccionados)}")
+        top_estratificado.extend(seleccionados)
+
+    print(f"\nTop por estrato (total={len(top_estratificado)}):")
+    print(f"{'#':>3} {'Idx':>5} {'Stratum':>14} {'Pred':>8} {'Real':>8} {'Error':>8}")
+    print("-" * 60)
+    for rank, res in enumerate(top_estratificado, 1):
+        print(f"{rank:>3} {res['indice']:>5} {res['stratum']:>14} "
+              f"{res['pred']:>8.3f} {res['real']:>8.3f} {res['error']:>8.3f}")
+
+    indices_a_evaluar = [res['indice'] for res in top_estratificado]
+    n_total_eval      = len(indices_a_evaluar)
     all_results = {}
 
     print("\n" + "="*60)
@@ -275,13 +484,14 @@ if __name__ == "__main__":
         real  = data.y.item()
         error = abs(pred - real)
 
-        print(f"\n[{rank}/10] {nombre}")
+        print(f"\n[{rank}/{n_total_eval}] {nombre}")
         print(f"  Pred={pred:.3f}  Real={real:.3f}  Error={error:.3f}")
 
         all_results[nombre] = {
             "pred":  round(pred,  4),
             "real":  round(real,  4),
             "error": round(error, 4),
+            "pic50_stratum": get_pic50_stratum(real),
         }
 
         # ── GNNExplainer ─────────────────────────────────────────────
@@ -292,7 +502,7 @@ if __name__ == "__main__":
                 algorithm=GNNExplainer(epochs=200),
                 explanation_type='model',
                 node_mask_type='attributes',
-                edge_mask_type=None,
+                edge_mask_type='object',
                 model_config=dict(mode='regression', task_level='graph', return_type='raw')
             )
             exp_gnn = explainer_gnn(data.x, data.edge_index, edge_attr=data.edge_attr)
@@ -311,12 +521,17 @@ if __name__ == "__main__":
                     return exp.edge_mask
                 return node_imp_to_edge_mask(node_imp, edge_index_pert)
 
+            # Threshold adaptativo: top 30% de aristas como "importantes"
+            threshold_gnn = adaptive_threshold(edge_mask_gnn, top_k_pct=0.30)
+            print(f"    Threshold adaptativo (top-30%): {threshold_gnn:.4f}")
+
             metricas_gnn = evaluator.evaluate_explanation(
                 data=data,
                 edge_mask=edge_mask_gnn,
                 explainer_func=gnn_wrapper_stability,
-                threshold=0.5
+                threshold=threshold_gnn
             )
+            metricas_gnn["threshold_used"] = round(threshold_gnn, 4)
             all_results[nombre]["GNNExplainer"] = metricas_gnn
 
             print("    Métricas:")
@@ -363,7 +578,9 @@ if __name__ == "__main__":
             node_imp_sal = exp_sal.node_mask.abs().sum(dim=1).detach().numpy()
 
             proxy_edge_mask = node_imp_to_edge_mask(node_imp_sal, data.edge_index)
-            threshold_sal   = 0.5
+            # Threshold adaptativo: top 30% de aristas como "importantes"
+            threshold_sal = adaptive_threshold(proxy_edge_mask, top_k_pct=0.30)
+            print(f"    Threshold adaptativo (top-30%): {threshold_sal:.4f}")
 
             def sal_wrapper_stability(x_pert, edge_index_pert, edge_attr_pert):
                 exp = explainer_sal(x_pert, edge_index_pert, edge_attr=edge_attr_pert)
@@ -376,10 +593,12 @@ if __name__ == "__main__":
                 explainer_func=sal_wrapper_stability,
                 threshold=threshold_sal         
             )
+            metricas_sal["threshold_used"] = round(threshold_sal, 4)
             metricas_sal["nota"] = (
                 "Importancia de nodo = |gradiente| sumado por features. "
                 "Fidelity/Sparsity calculadas sobre edge_mask proxy "
-                "(media de importancias de nodos extremos, normalizada [0,1])."
+                "(media de importancias de nodos extremos, normalizada [0,1]). "
+                "Threshold adaptativo por percentil (top 30%)."
             )
 
             all_results[nombre]["Saliency"] = metricas_sal
@@ -420,14 +639,21 @@ if __name__ == "__main__":
     print(f"\n  ✓ Métricas guardadas en: {metrics_path}")
 
     # ─────────────────────────────────────────────────────────────────
-    # Resumen agregado por método
+    # Resumen agregado por método (global + estratificado por pIC50)
     # ─────────────────────────────────────────────────────────────────
     print("\n" + "="*60)
     print("RESUMEN AGREGADO DE MÉTRICAS")
     print("="*60)
 
     metric_keys = ["Fidelity+", "Fidelity-", "Sparsity", "Stability"]
-    for method in ["GNNExplainer", "Saliency"]:
+    methods     = ["GNNExplainer", "Saliency"]
+    strata      = ["low (<5)", "medium (5-7)", "high (>=7)"]
+
+    summary_block = {}
+
+    # ── Resumen GLOBAL ────────────────────────────────────────────────
+    print("\n[GLOBAL]")
+    for method in methods:
         vals = {k: [] for k in metric_keys}
         for mol_data in all_results.values():
             m = mol_data.get(method, {})
@@ -439,17 +665,84 @@ if __name__ == "__main__":
                     vals[key].append(v)
 
         print(f"\n  {method}:")
+        method_summary = {}
         for key, lst in vals.items():
             if lst:
-                print(f"    {key:<25} media={np.mean(lst):.4f}  std={np.std(lst):.4f}  (n={len(lst)})")
+                mean_v, std_v = float(np.mean(lst)), float(np.std(lst))
+                print(f"    {key:<25} media={mean_v:.4f}  std={std_v:.4f}  (n={len(lst)})")
+                method_summary[key] = {"mean": round(mean_v, 4),
+                                       "std":  round(std_v,  4),
+                                       "n":    len(lst)}
             else:
                 print(f"    {key:<25} N/A")
+                method_summary[key] = None
+        summary_block[method] = {"global": method_summary, "by_stratum": {}}
+
+    # ── Resumen ESTRATIFICADO por pIC50 ───────────────────────────────
+    print("\n[ESTRATIFICADO POR pIC50]")
+    print("  Convención: low<5, medium∈[5,7), high≥7")
+
+    for method in methods:
+        print(f"\n  {method}:")
+        for stratum in strata:
+            vals = {k: [] for k in metric_keys}
+            for mol_data in all_results.values():
+                if mol_data.get("pic50_stratum") != stratum:
+                    continue
+                m = mol_data.get(method, {})
+                if "error" in m:
+                    continue
+                for key in metric_keys:
+                    v = m.get(key)
+                    if isinstance(v, (int, float)):
+                        vals[key].append(v)
+
+            n_mol = max(len(v) for v in vals.values()) if vals else 0
+            if n_mol == 0:
+                print(f"    [{stratum}]  (sin moléculas)")
+                summary_block[method]["by_stratum"][stratum] = None
+                continue
+
+            print(f"    [{stratum}]  n={n_mol}")
+            stratum_summary = {}
+            for key, lst in vals.items():
+                if lst:
+                    mean_v, std_v = float(np.mean(lst)), float(np.std(lst))
+                    print(f"      {key:<23} media={mean_v:.4f}  std={std_v:.4f}")
+                    stratum_summary[key] = {"mean": round(mean_v, 4),
+                                            "std":  round(std_v,  4),
+                                            "n":    len(lst)}
+                else:
+                    print(f"      {key:<23} N/A")
+                    stratum_summary[key] = None
+            summary_block[method]["by_stratum"][stratum] = stratum_summary
+
+    # ── Persistir el resumen junto con las métricas individuales ──────
+    all_results["__summary__"] = summary_block
+    with open(metrics_path, 'w', encoding='utf-8') as f:
+        json.dump(all_results, f, indent=4, ensure_ascii=False)
+    print(f"\n  ✓ Resumen estratificado añadido a: {metrics_path}")
+
+    # ─────────────────────────────────────────────────────────────────
+    # Curvas de fidelidad agregadas por estrato de pIC50
+    # ─────────────────────────────────────────────────────────────────
+    print("\n" + "="*60)
+    print("Generando curvas de fidelidad agregadas por estrato...")
+    print("="*60)
+    aggregated_paths = plot_aggregated_fidelity_curves(
+        all_results=all_results,
+        methods=methods,
+        strata=strata,
+        save_dir=MODEL_DIR,
+    )
 
     print("\n" + "="*60)
     print("ANÁLISIS COMPLETADO")
     print("="*60)
     print(f"\nResultados en: {MODEL_DIR}/")
-    print(f"  • Métricas XAI:   xai_metrics.json")
-    print(f"  • Imágenes 2D:    gnnexplainer_*.png, saliency_*.png")
-    print(f"  • Archivos PyMOL: gnnexplainer_*.pdb/.pml, saliency_*.pdb/.pml")
-    print(f"\nTotal archivos de visualización: {len(indices_a_evaluar) * 4}")
+    print(f"  • Métricas XAI:           xai_metrics.json")
+    print(f"  • Imágenes 2D:            gnnexplainer_*.png, saliency_*.png")
+    print(f"  • Archivos PyMOL:         gnnexplainer_*.pdb/.pml, saliency_*.pdb/.pml")
+    print(f"  • Curvas individuales:    fidelity_curve_<method>_<pdb>.png")
+    print(f"  • Curvas agregadas:       fidelity_curve_AGGREGATED_<method>.png")
+    print(f"\nMoléculas evaluadas: {n_total_eval}")
