@@ -333,7 +333,7 @@ def complex_to_graph_hybrid(sdf_path, cif_path, pdb_path, json_path, target_val,
     y_val = torch.tensor([[target_val]], dtype=torch.float) 
     
     pos_raw = torch.tensor(np.array(node_positions), dtype=torch.float)
-    pos_norm = (pos_raw - POS_MIN) / (POS_MAX - POS_MIN).clamp(min=0.0, max=1.0) # Fórmula matemática: (X - Min) / (Max - Min)
+    pos_norm = ((pos_raw - POS_MIN) / (POS_MAX - POS_MIN)).clamp(min=0.0, max=1.0)
     
     if len(edge_indices) > 0:
         edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()

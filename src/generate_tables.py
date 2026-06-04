@@ -60,7 +60,7 @@ def generate_heatmaps():
     
     # cmap="RdYlGn_r" significa: Red (Rojo) -> Yellow (Amarillo) -> Green (Verde). 
     # La "_r" final invierte la paleta para que los números BAJOS sean VERDES (porque es un error).
-    sns.heatmap(df_rmse, annot=True, fmt=".4f", cmap="RdYlGn_r", cbar_kws={'label': 'RMSE (Menor es mejor)'}, linewidths=1, linecolor='black')
+    sns.heatmap(df_rmse, annot=True, fmt=".3f", cmap="RdYlGn_r", cbar_kws={'label': 'RMSE (Menor es mejor)'}, linewidths=1, linecolor='black')
     
     plt.title("Evaluación 5-Fold CV: Raíz del Error Cuadrático Medio (RMSE)", fontsize=14, pad=15, fontweight='bold')
     plt.yticks(rotation=0, fontweight='bold')
@@ -75,7 +75,7 @@ def generate_heatmaps():
     plt.figure(figsize=(10, 4))
     
     # cmap="RdYlGn" (SIN la _r). Aquí los números ALTOS son VERDES.
-    sns.heatmap(df_r2, annot=True, fmt=".4f", cmap="RdYlGn", cbar_kws={'label': 'R² (Mayor es mejor)'}, linewidths=1, linecolor='black')
+    sns.heatmap(df_r2, annot=True, fmt=".3f", cmap="RdYlGn", cbar_kws={'label': 'R² (Mayor es mejor)'}, linewidths=1, linecolor='black')
     
     plt.title("Evaluación 5-Fold CV: Coeficiente de Determinación (R²)", fontsize=14, pad=15, fontweight='bold')
     plt.yticks(rotation=0, fontweight='bold')

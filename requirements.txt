@@ -12,6 +12,7 @@ optuna>=3.0.0
 # Manipulación de Datos y Matemáticas
 numpy<2.0.0  # Restringido para evitar conflictos con versiones antiguas de PyTorch/Pandas
 pandas>=2.0.0
+seaborn>=0.12.0
 scikit-learn>=1.2.0
 
 # Visualización y Grafos Clásicos
